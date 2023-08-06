@@ -6,6 +6,7 @@ public class PlayerMovement : MonoBehaviour
 {
     [Header("Components")]
     [SerializeField] private Rigidbody2D _rigidBody;
+    [SerializeField] private Animator _anim;
 
     [Header("Movement Variables")]
     [SerializeField] private float _movementAcceleration;
@@ -16,7 +17,6 @@ public class PlayerMovement : MonoBehaviour
     private float _verticalDirection;
     private bool _changingDirection => (_rigidBody.velocity.x > 0f && _horizontalDirection < 0f) || (_rigidBody.velocity.x < 0f && _horizontalDirection > 0f);
     private bool _facingRight = true;
-    private bool _canMove => !_wallGrab;
     private bool _recentlyFlipped = true;
 
     [Header("Jump Variables")]
@@ -32,7 +32,7 @@ public class PlayerMovement : MonoBehaviour
     private float _jumpBufferCounter;
     private int _extraJumpsValue;
     private bool _isJumping = false;
-    private bool _canJump => _jumpBufferCounter > 0f && (_hangTimeCounter > 0f || _extraJumpsValue > 0);
+    private bool _canJump => _jumpBufferCounter > 0f && (_hangTimeCounter > 0f || _extraJumpsValue > 0 || _onWall);
 
     [Header("Glide Variables")]
     [SerializeField] private float _glidePower = -1f;
@@ -41,9 +41,8 @@ public class PlayerMovement : MonoBehaviour
     [Header("Wall Interaction Variables")]
     [SerializeField] private float _wallSliderMod = .01f;
     [SerializeField] private float _wallRunMod = .25f;
-    private bool _wallGrab => _onWall && !_onGround && !_wallRun && Input.GetButton("WallGrab");
-    private bool _wallSlide => _onWall && !_onGround && !_wallRun && !Input.GetButton("WallGrab") && _rigidBody.velocity.y < 0f;
-    private bool _wallRun => _onWall && Mathf.Abs(_horizontalDirection) > 0f;
+    private bool _wallSlide => _onWall && !_onGround && !_wallRun && _rigidBody.velocity.y < 0f;
+    private bool _wallRun => _onWall && PowerUps.wallRun && Mathf.Abs(_horizontalDirection) > 0f;
 
 
     [Header("Layer Masks")]
@@ -57,6 +56,7 @@ public class PlayerMovement : MonoBehaviour
 
     [Header("Wall Collision Variables")]
     [SerializeField] private float _wallRaycastLength;
+    [SerializeField] private float _wallRaycastApproach;
     private bool _onWall;
     private bool _onRightWall;
     private bool _onLeftWall;
@@ -64,24 +64,18 @@ public class PlayerMovement : MonoBehaviour
     void Start()
     {
         _rigidBody = GetComponent<Rigidbody2D>();
+        _anim = GetComponent<Animator>();
         _initialGravityScale = _rigidBody.gravityScale;
     }
 
     // Update is called once per frame
     void Update()
     {
-        if(_wallRun && _onWall)
-        {
-            _verticalDirection = GetInput().x;
-        }
-        else if(!_wallRun)
-        {
-            _horizontalDirection = GetInput().x;
-            _verticalDirection = GetInput().y;
-        }
+        _horizontalDirection = GetInput().x;
+        _verticalDirection = GetInput().y;
         if (Input.GetButtonDown("Jump")) _jumpBufferCounter = _jumpBufferLength;
         else _jumpBufferCounter -= Time.deltaTime;
-        Debug.Log("MPH: " + _currentSpeed + " Wall Run: " + _wallRun);
+        Animation();
 
         //flips are flipping cool!
         if (!_onWall)
@@ -107,13 +101,25 @@ public class PlayerMovement : MonoBehaviour
     private void FixedUpdate()
     {
         CheckCollisions();
-        if(_canMove) MoveCharacter();
+        MoveCharacter();
         ApplyGroundLinearDrag();
-        if (_canJump) Jump();
+        if (_canJump)
+        {
+            if(_onWall && !_onGround)
+            {
+                WallJump();
+            }
+            else
+            {
+                Jump(Vector2.up);
+            }
+        }
         if (_canGlide) Glide();
-        if (_wallGrab) WallGrab();
-        if (_wallSlide) WallSlide();
-        if (_wallRun) WallRun();
+        if(!_isJumping)
+        {
+            if (_wallSlide) WallSlide();
+            if (_wallRun) WallRun();
+        }
         if(_onGround)
         {
             ApplyGroundLinearDrag();
@@ -123,17 +129,13 @@ public class PlayerMovement : MonoBehaviour
             _hangTimeCounter = _hangTime;
             _rigidBody.gravityScale = _initialGravityScale;
         }
-        else if(!_wallRun)
-        {
-            Physics2D.gravity = new Vector2(0f, -9.8f);
-        }
         else
         {
             ApplyAirLinearDrag();
             FallMultiplier();
             _hangTimeCounter -= Time.fixedDeltaTime;
+            if (!_onWall || _rigidBody.velocity.y < 0f || _wallRun) _isJumping = false;
         }
-        FallMultiplier();
 
     }
 
@@ -142,17 +144,23 @@ public class PlayerMovement : MonoBehaviour
         return new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical"));
     }
 
-    private void Jump()
+    private void Jump(Vector2 direction)
     {
-        if (!_onGround)
+        if (!_onGround && !_onWall)
             _extraJumpsValue--;
 
         ApplyAirLinearDrag();
         _rigidBody.velocity = new Vector2(_rigidBody.velocity.x, 0f);
-        _rigidBody.AddForce(Vector2.up * _jumpForce, ForceMode2D.Impulse);
+        _rigidBody.AddForce(direction * _jumpForce, ForceMode2D.Impulse);
         _hangTimeCounter = 0f;
         _jumpBufferCounter = 0f;
         _isJumping = true;
+    }
+   
+    private void WallJump()
+    {
+        Vector2 jumpDirection = _onRightWall ? Vector2.left : Vector2.right;
+        Jump(Vector2.up + jumpDirection);
     }
 
     private void Glide()
@@ -171,40 +179,20 @@ public class PlayerMovement : MonoBehaviour
         }
     }
 
-    private void WallGrab()
-    {
-        _rigidBody.gravityScale = 0f;
-        _rigidBody.velocity = new Vector2(_rigidBody.velocity.x, 0f);
-        StickToWall();
-    }
-
     private void WallSlide()
     {
         _rigidBody.velocity = new Vector2(_rigidBody.velocity.x, -_maxMoveSpeed * _wallSliderMod);
-        StickToWall();
     }
 
     private void WallRun()
     {
-        if(_onRightWall && !_onLeftWall && _horizontalDirection > 0f)
+        if(_onRightWall && _horizontalDirection > 0f)
         {
-            Physics2D.gravity = new Vector2(9.8f, 0f);
+            _rigidBody.velocity = new Vector2(_rigidBody.velocity.x, _horizontalDirection * _movementAcceleration * _wallRunMod);
         }
-        else if(!_onRightWall && _onLeftWall && _horizontalDirection < 0f)
+        else if(!_onRightWall && _horizontalDirection < 0f)
         {
-            Physics2D.gravity = new Vector2(-9.8f, 0f);
-        }
-    }
-
-    private void StickToWall()
-    {
-        if(_onRightWall && _horizontalDirection >= 0f)
-        {
-            _rigidBody.velocity = new Vector2(1f, _rigidBody.velocity.y);
-        }
-        else if(!_onRightWall && _horizontalDirection <= 0f)
-        {
-            _rigidBody.velocity = new Vector2(-1f, _rigidBody.velocity.y);
+            _rigidBody.velocity = new Vector2(_rigidBody.velocity.x, -_horizontalDirection * _movementAcceleration * _wallRunMod);
         }
     }
 
@@ -226,23 +214,11 @@ public class PlayerMovement : MonoBehaviour
 
     private void MoveCharacter()
     {
-        if(!_wallRun)
+        _rigidBody.AddForce(new Vector2(_horizontalDirection, 0f) * _movementAcceleration);
+        if (Mathf.Abs(_rigidBody.velocity.x) > _maxMoveSpeed)
         {
-            _rigidBody.AddForce(new Vector2(_horizontalDirection, 0f) * _movementAcceleration);
-            if (Mathf.Abs(_rigidBody.velocity.x) > _maxMoveSpeed)
-            {
-                _rigidBody.velocity = new Vector2(Mathf.Sign(_rigidBody.velocity.x) * _maxMoveSpeed, _rigidBody.velocity.y);
+            _rigidBody.velocity = new Vector2(Mathf.Sign(_rigidBody.velocity.x) * _maxMoveSpeed, _rigidBody.velocity.y);
 
-            }
-        }
-        else if(_wallRun)
-        {
-            _rigidBody.AddForce(new Vector2(0f, _horizontalDirection) * _movementAcceleration);
-            if (Mathf.Abs(_rigidBody.velocity.y) > _maxMoveSpeed)
-            {
-                _rigidBody.velocity = new Vector2(_rigidBody.velocity.x, Mathf.Sign(_rigidBody.velocity.y) * _maxMoveSpeed);
-
-            }
         }
 
     }
@@ -271,6 +247,32 @@ public class PlayerMovement : MonoBehaviour
             Physics2D.Raycast(transform.position, Vector2.left, _wallRaycastLength, wallLayer);
         _onRightWall = Physics2D.Raycast(transform.position, Vector2.right, _wallRaycastLength, wallLayer);
         _onLeftWall = Physics2D.Raycast(transform.position, Vector2.left, _wallRaycastLength, wallLayer);
+    }
+
+    void Animation()
+    {
+        if(_onGround)
+        {
+            _anim.SetBool("isGrounded", true);
+            _anim.SetFloat("horizontalDirection", Mathf.Abs(_horizontalDirection));
+        }
+        else
+        {
+            _anim.SetBool("isGrounded", false);
+        }
+        if(_isJumping)
+        {
+            _anim.SetBool("isJumping", true);
+            _anim.SetFloat("verticalDirection", 0f);
+        }
+        else
+        {
+            _anim.SetBool("isJumping", false);
+            if(_wallRun)
+            {
+                _anim.SetFloat("verticalDirection", Mathf.Abs(_horizontalDirection));
+            }
+        }
     }
 
     private void Flip()
